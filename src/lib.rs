@@ -182,7 +182,7 @@ pub fn req(
             KeyValue::new(HTTP_ROUTE, target),
         ];
 
-        let duration = instant.elapsed().as_millis() as u64;
+        let duration = u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX);
         metrics.duration.record(duration, &attrs);
         metrics.count.add(1, &attrs);
 
