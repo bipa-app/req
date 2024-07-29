@@ -2,6 +2,7 @@ mod multipart;
 
 pub use common_multipart_rfc7578::client::multipart::Form;
 pub use hyper::{body::Bytes, Method, StatusCode, Uri};
+pub use mime;
 pub use opentelemetry::{
     trace::{Span, Tracer},
     Context, KeyValue,
