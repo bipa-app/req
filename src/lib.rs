@@ -118,7 +118,7 @@ fn metrics(meter: &opentelemetry::metrics::Meter) -> Metrics {
     let duration = meter
         .u64_histogram("http.client.request.duration")
         .with_description("How much time does it take to make the request?")
-        .with_unit(opentelemetry::metrics::Unit::new("ms"))
+        .with_unit("ms")
         .init();
 
     Metrics { count, duration }
