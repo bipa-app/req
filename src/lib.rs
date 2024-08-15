@@ -457,7 +457,7 @@ macro_rules! span {
         let mut span = $client.tracer.start_with_context(name, $ctx);
 
         span.set_attributes([
-            $crate::KeyValue::new("service.name", $client.name),
+            $crate::KeyValue::new("peer.service", $client.name),
             $crate::KeyValue::new("url.full", url.clone()),
             $crate::KeyValue::new("http.route", $target),
             $crate::KeyValue::new("http.request.method", stringify!($method)),
