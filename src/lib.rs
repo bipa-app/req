@@ -13,7 +13,6 @@ use hyper::Request;
 use hyper_rustls::ConfigBuilderExt;
 use opentelemetry::{
     global::BoxedSpan,
-    metrics::{Counter, Histogram},
     trace::{FutureExt, TraceContextExt},
 };
 use opentelemetry_semantic_conventions::{
@@ -35,19 +34,13 @@ pub struct Client {
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         http_body_util::combinators::BoxBody<Bytes, BodyError>,
     >,
-    metrics: Metrics,
+    duration: opentelemetry::metrics::Histogram<u64>,
     pub tracer: std::sync::Arc<opentelemetry::global::BoxedTracer>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("Body could not be bodied")]
 pub struct BodyError;
-
-#[derive(Clone)]
-struct Metrics {
-    count: Counter<u64>,
-    duration: Histogram<u64>,
-}
 
 #[must_use]
 pub fn client(name: &'static str, uri: Uri) -> Client {
@@ -65,14 +58,19 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
     let hyper = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .build(tls);
 
-    let metrics = metrics(&opentelemetry::global::meter(name));
+    let duration = opentelemetry::global::meter(name)
+        .u64_histogram("http.client.request.duration")
+        .with_description("How much time does it take to make the request?")
+        .with_unit("ms")
+        .init();
+
     let tracer = std::sync::Arc::new(opentelemetry::global::tracer(name));
 
     Client {
         uri,
         name,
         hyper,
-        metrics,
+        duration,
         tracer,
     }
 }
@@ -97,31 +95,21 @@ pub fn client_mtls(
     let hyper = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .build(tls);
 
-    let metrics = metrics(&opentelemetry::global::meter(name));
+    let duration = opentelemetry::global::meter(name)
+        .u64_histogram("http.client.request.duration")
+        .with_description("How much time does it take to make the request?")
+        .with_unit("ms")
+        .init();
+
     let tracer = std::sync::Arc::new(opentelemetry::global::tracer(name));
 
     Ok(Client {
         uri,
         name,
         hyper,
-        metrics,
+        duration,
         tracer,
     })
-}
-
-fn metrics(meter: &opentelemetry::metrics::Meter) -> Metrics {
-    let count = meter
-        .u64_counter("http.client.request.count")
-        .with_description("How many requests are we making?")
-        .init();
-
-    let duration = meter
-        .u64_histogram("http.client.request.duration")
-        .with_description("How much time does it take to make the request?")
-        .with_unit("ms")
-        .init();
-
-    Metrics { count, duration }
 }
 
 #[derive(Debug)]
@@ -163,7 +151,7 @@ pub fn req(
         .map(|request| c.hyper.request(request));
 
     let service_name = c.name;
-    let metrics = c.metrics.clone();
+    let duration = c.duration.clone();
     let instant = std::time::Instant::now();
 
     async move {
@@ -183,9 +171,10 @@ pub fn req(
             KeyValue::new(HTTP_ROUTE, target),
         ];
 
-        let duration = u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX);
-        metrics.duration.record(duration, &attrs);
-        metrics.count.add(1, &attrs);
+        duration.record(
+            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+            &attrs,
+        );
 
         let bytes = response
             .into_body()
@@ -230,7 +219,8 @@ pub fn req_json<T: Serialize>(
         });
 
     let service_name = c.name;
-    let count = c.metrics.count.clone();
+    let duration = c.duration.clone();
+    let instant = std::time::Instant::now();
 
     async move {
         let response = request?.await.map_err(Error::Network)?;
@@ -242,14 +232,16 @@ pub fn req_json<T: Serialize>(
             status.to_string(),
         ));
 
-        count.add(
-            1,
-            &[
-                KeyValue::new(SERVICE_NAME, service_name),
-                KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
-                KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                KeyValue::new(HTTP_ROUTE, target),
-            ],
+        let attrs = [
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+            KeyValue::new(HTTP_ROUTE, target),
+        ];
+
+        duration.record(
+            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+            &attrs,
         );
 
         let bytes = response
@@ -294,7 +286,8 @@ pub fn req_form_urlencoded<T: Serialize>(
         });
 
     let service_name = c.name;
-    let count = c.metrics.count.clone();
+    let duration = c.duration.clone();
+    let instant = std::time::Instant::now();
 
     async move {
         let response = request?.await.map_err(Error::Network)?;
@@ -306,14 +299,16 @@ pub fn req_form_urlencoded<T: Serialize>(
             status.to_string(),
         ));
 
-        count.add(
-            1,
-            &[
-                KeyValue::new(SERVICE_NAME, service_name),
-                KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
-                KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                KeyValue::new(HTTP_ROUTE, target),
-            ],
+        let attrs = [
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+            KeyValue::new(HTTP_ROUTE, target),
+        ];
+
+        duration.record(
+            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+            &attrs,
         );
 
         let bytes = response
@@ -355,7 +350,8 @@ pub fn req_form_multipart(
         .map(|request| c.hyper.request(request));
 
     let service_name = c.name;
-    let count = c.metrics.count.clone();
+    let duration = c.duration.clone();
+    let instant = std::time::Instant::now();
 
     async move {
         let request = request?;
@@ -368,14 +364,16 @@ pub fn req_form_multipart(
             status.to_string(),
         ));
 
-        count.add(
-            1,
-            &[
-                KeyValue::new(SERVICE_NAME, service_name),
-                KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
-                KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                KeyValue::new(HTTP_ROUTE, target),
-            ],
+        let attrs = [
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+            KeyValue::new(HTTP_ROUTE, target),
+        ];
+
+        duration.record(
+            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+            &attrs,
         );
 
         let bytes = response
