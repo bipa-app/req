@@ -161,12 +161,12 @@ pub fn req(
         let ctx = opentelemetry::Context::current();
         ctx.span().set_attribute(opentelemetry::KeyValue::new(
             HTTP_RESPONSE_STATUS_CODE,
-            status.to_string(),
+            status.as_u16().to_string(),
         ));
 
         let attrs = [
             KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
             KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
             KeyValue::new(HTTP_ROUTE, target),
         ];
@@ -229,12 +229,12 @@ pub fn req_json<T: Serialize>(
         let ctx = opentelemetry::Context::current();
         ctx.span().set_attribute(opentelemetry::KeyValue::new(
             HTTP_RESPONSE_STATUS_CODE,
-            status.to_string(),
+            status.as_u16().to_string(),
         ));
 
         let attrs = [
             KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
             KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
             KeyValue::new(HTTP_ROUTE, target),
         ];
@@ -296,12 +296,12 @@ pub fn req_form_urlencoded<T: Serialize>(
         let ctx = opentelemetry::Context::current();
         ctx.span().set_attribute(opentelemetry::KeyValue::new(
             HTTP_RESPONSE_STATUS_CODE,
-            status.to_string(),
+            status.as_u16().to_string(),
         ));
 
         let attrs = [
             KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
             KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
             KeyValue::new(HTTP_ROUTE, target),
         ];
@@ -361,12 +361,12 @@ pub fn req_form_multipart(
         let ctx = opentelemetry::Context::current();
         ctx.span().set_attribute(opentelemetry::KeyValue::new(
             HTTP_RESPONSE_STATUS_CODE,
-            status.to_string(),
+            status.as_u16().to_string(),
         ));
 
         let attrs = [
             KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_str().to_string()),
+            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
             KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
             KeyValue::new(HTTP_ROUTE, target),
         ];
