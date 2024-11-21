@@ -62,7 +62,7 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
         .u64_histogram("http.client.request.duration")
         .with_description("How much time does it take to make the request?")
         .with_unit("ms")
-        .init();
+        .build();
 
     let tracer = std::sync::Arc::new(opentelemetry::global::tracer(name));
 
@@ -99,7 +99,7 @@ pub fn client_mtls(
         .u64_histogram("http.client.request.duration")
         .with_description("How much time does it take to make the request?")
         .with_unit("ms")
-        .init();
+        .build();
 
     let tracer = std::sync::Arc::new(opentelemetry::global::tracer(name));
 
