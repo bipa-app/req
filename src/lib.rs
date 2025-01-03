@@ -50,7 +50,7 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
 
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(config)
-        .https_only()
+        .https_or_http()
         .enable_http1()
         .enable_http2()
         .build();
@@ -87,7 +87,7 @@ pub fn client_mtls(
 
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(config)
-        .https_only()
+        .https_or_http()
         .enable_http1()
         .enable_http2()
         .build();
