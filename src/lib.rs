@@ -112,13 +112,18 @@ pub fn client_mtls(
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    Prepare(hyper::http::Error),
-    EncodeJson(serde_json::Error),
-    EncodeForm(serde_urlencoded::ser::Error),
-    Network(hyper_util::client::legacy::Error),
-    Read(hyper::Error),
+    #[error("prepare")]
+    Prepare(#[from] hyper::http::Error),
+    #[error("encode json")]
+    EncodeJson(#[from] serde_json::Error),
+    #[error("encode form")]
+    EncodeForm(#[from] serde_urlencoded::ser::Error),
+    #[error("encode network")]
+    Network(#[from] hyper_util::client::legacy::Error),
+    #[error("read")]
+    Read(#[from] hyper::Error),
 }
 
 pub fn req(
