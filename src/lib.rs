@@ -163,38 +163,42 @@ pub fn req(
         let ctx = opentelemetry::Context::current();
         let span = ctx.span();
 
-        let response = request?.await.map_err(|e| {
-            let description = e.to_string().into();
-            span.set_status(opentelemetry::trace::Status::Error { description });
-            Error::Network(e)
-        })?;
+        match request?.await {
+            Err(e) => {
+                let description = e.to_string().into();
+                span.set_status(opentelemetry::trace::Status::Error { description });
 
-        let status = response.status();
-        span.set_attribute(opentelemetry::KeyValue::new(
-            HTTP_RESPONSE_STATUS_CODE,
-            status.as_u16().to_string(),
-        ));
-        span.set_status(opentelemetry::trace::Status::Ok);
+                Err(Error::Network(e))
+            }
+            Ok(response) => {
+                let status = response.status();
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    HTTP_RESPONSE_STATUS_CODE,
+                    status.as_u16().to_string(),
+                ));
+                span.set_status(opentelemetry::trace::Status::Ok);
 
-        let attrs = [
-            KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
-            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-            KeyValue::new(HTTP_ROUTE, target),
-        ];
+                let attrs = [
+                    KeyValue::new(SERVICE_NAME, service_name),
+                    KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
+                    KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+                    KeyValue::new(HTTP_ROUTE, target),
+                ];
+                duration.record(
+                    u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    &attrs,
+                );
 
-        duration.record(
-            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-            &attrs,
-        );
+                let bytes = response
+                    .into_body()
+                    .collect()
+                    .await
+                    .map_err(Error::Read)?
+                    .to_bytes();
 
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(Error::Read)?
-            .to_bytes();
-        Ok((status, bytes))
+                Ok((status, bytes))
+            }
+        }
     }
     .with_context(opentelemetry::Context::current_with_span(span))
 }
