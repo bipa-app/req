@@ -168,6 +168,11 @@ pub fn req(
                 let description = e.to_string().into();
                 span.set_status(opentelemetry::trace::Status::Error { description });
 
+                duration.record(
+                    u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    &[KeyValue::new(SERVICE_NAME, service_name)],
+                );
+
                 Err(Error::Network(e))
             }
             Ok(response) => {
