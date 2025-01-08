@@ -2,6 +2,7 @@ mod multipart;
 
 pub use common_multipart_rfc7578::client::multipart::Form;
 pub use hyper::{body::Bytes, Method, StatusCode, Uri};
+use hyper_util::client::legacy::ResponseFuture;
 pub use mime;
 pub use opentelemetry::{
     trace::{Span, Tracer},
@@ -126,35 +127,13 @@ pub enum Error {
     Read(#[from] hyper::Error),
 }
 
-pub fn req(
+fn res_process(
     c: &Client,
     span: BoxedSpan,
     target: &'static str,
     method: Method,
-    uri: &str,
-    headers: &[(&str, &str)],
-    body: Option<Vec<u8>>,
+    request: Result<ResponseFuture, Error>,
 ) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
-    let mut request = Request::builder();
-
-    for &(hn, hv) in headers {
-        request = request.header(hn, hv);
-    }
-
-    let body = match body {
-        None => http_body_util::Empty::new().map_err(|_| BodyError).boxed(),
-        Some(body) => http_body_util::Full::from(body)
-            .map_err(|_| BodyError)
-            .boxed(),
-    };
-
-    let request = request
-        .method(&method)
-        .uri(uri)
-        .body(body)
-        .map_err(Error::Prepare)
-        .map(|request| c.hyper.request(request));
-
     let service_name = c.name;
     let duration = c.duration.clone();
     let instant = std::time::Instant::now();
@@ -168,9 +147,14 @@ pub fn req(
                 let description = e.to_string().into();
                 span.set_status(opentelemetry::trace::Status::Error { description });
 
+                let attrs = [
+                    KeyValue::new(SERVICE_NAME, service_name),
+                    KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+                    KeyValue::new(HTTP_ROUTE, target),
+                ];
                 duration.record(
                     u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    &[KeyValue::new(SERVICE_NAME, service_name)],
+                    &attrs,
                 );
 
                 Err(Error::Network(e))
@@ -208,6 +192,38 @@ pub fn req(
     .with_context(opentelemetry::Context::current_with_span(span))
 }
 
+pub fn req(
+    c: &Client,
+    span: BoxedSpan,
+    target: &'static str,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: Option<Vec<u8>>,
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+    let mut request = Request::builder();
+
+    for &(hn, hv) in headers {
+        request = request.header(hn, hv);
+    }
+
+    let body = match body {
+        None => http_body_util::Empty::new().map_err(|_| BodyError).boxed(),
+        Some(body) => http_body_util::Full::from(body)
+            .map_err(|_| BodyError)
+            .boxed(),
+    };
+
+    let request = request
+        .method(&method)
+        .uri(uri)
+        .body(body)
+        .map_err(Error::Prepare)
+        .map(|request| c.hyper.request(request));
+
+    res_process(c, span, target, method, request)
+}
+
 pub fn req_json<T: Serialize>(
     c: &Client,
     span: BoxedSpan,
@@ -239,41 +255,7 @@ pub fn req_json<T: Serialize>(
                 .map(|request| c.hyper.request(request))
         });
 
-    let service_name = c.name;
-    let duration = c.duration.clone();
-    let instant = std::time::Instant::now();
-
-    async move {
-        let response = request?.await.map_err(Error::Network)?;
-
-        let status = response.status();
-        let ctx = opentelemetry::Context::current();
-        ctx.span().set_attribute(opentelemetry::KeyValue::new(
-            HTTP_RESPONSE_STATUS_CODE,
-            status.as_u16().to_string(),
-        ));
-
-        let attrs = [
-            KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
-            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-            KeyValue::new(HTTP_ROUTE, target),
-        ];
-
-        duration.record(
-            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-            &attrs,
-        );
-
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(Error::Read)?
-            .to_bytes();
-        Ok((status, bytes))
-    }
-    .with_context(opentelemetry::Context::current_with_span(span))
+    res_process(c, span, target, method, request)
 }
 
 pub fn req_form_urlencoded<T: Serialize>(
@@ -306,41 +288,7 @@ pub fn req_form_urlencoded<T: Serialize>(
                 .map(|request| c.hyper.request(request))
         });
 
-    let service_name = c.name;
-    let duration = c.duration.clone();
-    let instant = std::time::Instant::now();
-
-    async move {
-        let response = request?.await.map_err(Error::Network)?;
-
-        let status = response.status();
-        let ctx = opentelemetry::Context::current();
-        ctx.span().set_attribute(opentelemetry::KeyValue::new(
-            HTTP_RESPONSE_STATUS_CODE,
-            status.as_u16().to_string(),
-        ));
-
-        let attrs = [
-            KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
-            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-            KeyValue::new(HTTP_ROUTE, target),
-        ];
-
-        duration.record(
-            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-            &attrs,
-        );
-
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(Error::Read)?
-            .to_bytes();
-        Ok((status, bytes))
-    }
-    .with_context(opentelemetry::Context::current_with_span(span))
+    res_process(c, span, target, method, request)
 }
 
 pub fn req_form_multipart(
@@ -370,42 +318,7 @@ pub fn req_form_multipart(
         .map_err(Error::Prepare)
         .map(|request| c.hyper.request(request));
 
-    let service_name = c.name;
-    let duration = c.duration.clone();
-    let instant = std::time::Instant::now();
-
-    async move {
-        let request = request?;
-        let response = request.await.map_err(Error::Network)?;
-
-        let status = response.status();
-        let ctx = opentelemetry::Context::current();
-        ctx.span().set_attribute(opentelemetry::KeyValue::new(
-            HTTP_RESPONSE_STATUS_CODE,
-            status.as_u16().to_string(),
-        ));
-
-        let attrs = [
-            KeyValue::new(SERVICE_NAME, service_name),
-            KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
-            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-            KeyValue::new(HTTP_ROUTE, target),
-        ];
-
-        duration.record(
-            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-            &attrs,
-        );
-
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(Error::Read)?
-            .to_bytes();
-        Ok((status, bytes))
-    }
-    .with_context(opentelemetry::Context::current_with_span(span))
+    res_process(c, span, target, method, request)
 }
 
 #[macro_export]
