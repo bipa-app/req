@@ -161,20 +161,20 @@ pub fn req(
 
     async move {
         let ctx = opentelemetry::Context::current();
+        let span = ctx.span();
 
         let response = request?.await.map_err(|e| {
-            ctx.span().set_status(opentelemetry::trace::Status::Error {
-                description: std::borrow::Cow::Owned(e.to_string()),
-            });
+            let description = e.to_string().into();
+            span.set_status(opentelemetry::trace::Status::Error { description });
             Error::Network(e)
         })?;
 
         let status = response.status();
-        ctx.span().set_attribute(opentelemetry::KeyValue::new(
+        span.set_attribute(opentelemetry::KeyValue::new(
             HTTP_RESPONSE_STATUS_CODE,
             status.as_u16().to_string(),
         ));
-        ctx.span().set_status(opentelemetry::trace::Status::Ok);
+        span.set_status(opentelemetry::trace::Status::Ok);
 
         let attrs = [
             KeyValue::new(SERVICE_NAME, service_name),
