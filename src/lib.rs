@@ -29,7 +29,7 @@ use std::future::Future;
 
 #[derive(Clone)]
 pub struct Client {
-    pub uri: Uri,
+    pub uri: &'static Uri,
     pub name: &'static str,
     hyper: hyper_util::client::legacy::Client<
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -44,7 +44,7 @@ pub struct Client {
 pub struct BodyError;
 
 #[must_use]
-pub fn client(name: &'static str, uri: Uri) -> Client {
+pub fn client(name: &'static str, uri: &'static Uri) -> Client {
     let config = ClientConfig::builder()
         .with_webpki_roots()
         .with_no_client_auth();
@@ -78,7 +78,7 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
 
 pub fn client_mtls(
     name: &'static str,
-    uri: Uri,
+    uri: &'static Uri,
     key: PrivateKeyDer<'static>,
     certs: Vec<CertificateDer<'static>>,
 ) -> Result<Client, rustls::Error> {
@@ -406,7 +406,7 @@ mod test {
     fn macro_signatures() {
         use super::{client, req, Form};
 
-        let client = client("test", hyper::Uri::from_static("/uri"));
+        let client = client("test", Box::leak(Box::new(hyper::Uri::from_static("/uri"))));
         let ctx = opentelemetry::Context::current();
 
         // no body
