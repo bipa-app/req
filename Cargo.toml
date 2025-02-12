@@ -14,8 +14,8 @@ hyper = { version = "1.0.0", features = ["http1", "http2"], default-features = f
 hyper-rustls = { version = "0.27.0", features = ["http1", "http2", "webpki-tokio"], default-features = false }
 hyper-util = { version = "0.1.0", default-features = false }
 mime = { version = "0.3.0", default-features = false }
-opentelemetry = { version = "0.27.0", features = ["metrics", "trace"], default-features = false }
-opentelemetry-semantic-conventions = { version = "0.27.0", default-features = false }
+opentelemetry = { version = "0.28.0", features = ["metrics", "trace"], default-features = false }
+opentelemetry-semantic-conventions = { version = "0.28.0", default-features = false }
 rustls = { version = "0.23.0", features = ["std", "ring", "tls12"], default-features = false }
 serde = { version = "1.0.0", default-features = false }
 serde_json = { version = "1.0.0", features = ["std"], default-features = false }
