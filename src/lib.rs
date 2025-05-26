@@ -133,7 +133,7 @@ fn res_process(
     target: &'static str,
     method: Method,
     request: Result<ResponseFuture, Error>,
-) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<> {
     let service_name = c.name;
     let duration = c.duration.clone();
     let instant = std::time::Instant::now();
@@ -142,7 +142,9 @@ fn res_process(
         let ctx = opentelemetry::Context::current();
         let span = ctx.span();
 
-        match request?.await {
+        let response_result = request?.await;
+
+        match response_result {
             Err(e) => {
                 let description = e.to_string().into();
                 span.set_status(opentelemetry::trace::Status::Error { description });
@@ -200,7 +202,7 @@ pub fn req(
     uri: &str,
     headers: &[(&str, &str)],
     body: Option<Vec<u8>>,
-) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<> {
     let mut request = Request::builder();
 
     for &(hn, hv) in headers {
@@ -232,7 +234,7 @@ pub fn req_json<T: Serialize>(
     uri: &str,
     headers: &[(&str, &str)],
     body: T,
-) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<T> {
     let request = serde_json::to_vec(&body)
         .map_err(Error::EncodeJson)
         .and_then(|body| {
@@ -266,7 +268,7 @@ pub fn req_form_urlencoded<T: Serialize>(
     uri: &str,
     headers: &[(&str, &str)],
     body: T,
-) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<T> {
     let request = serde_urlencoded::to_string(body)
         .map_err(Error::EncodeForm)
         .and_then(|body| {
@@ -299,7 +301,7 @@ pub fn req_form_multipart(
     uri: &str,
     headers: &[(&str, &str)],
     form: Form<'static>,
-) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> {
+) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<> {
     let mut request = Request::builder();
     request = request.header(hyper::header::CONTENT_TYPE, form.content_type());
 
