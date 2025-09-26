@@ -286,69 +286,59 @@ pub fn req_form_multipart(
 #[macro_export]
 macro_rules! req {
     (
-        $client:expr$(, $span:expr)?;
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*
     ) => {{
-        let (span, target, url) = $crate::span!($client$(, $span)?; $method, $path, $($arg),*);
+        let (span, target, url) = $crate::span!($client; $method, $path, $($arg),*);
         $crate::req(&$client, span, target, $crate::Method::$method, &url, &[$(($hn, $hv)),*], None)
     }};
     (
-        $client:expr$(, $span:expr)?;
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*;
         $body:expr
     ) => {{
-        let (span, target, url) = $crate::span!($client$(, $span)?; $method, $path, $($arg),*);
+        let (span, target, url) = $crate::span!($client; $method, $path, $($arg),*);
         $crate::req(&$client, span, target, $crate::Method::$method, &url, &[$(($hn, $hv)),*], $body)
     }};
     (
-        $client:expr$(, $span:expr)?;
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*;
         json: $body:expr
     ) => {{
-        let (span, target, url) = $crate::span!($client$(, $span)?; $method, $path, $($arg),*);
+        let (span, target, url) = $crate::span!($client; $method, $path, $($arg),*);
         $crate::req_json(&$client, span, target, $crate::Method::$method, &url, &[$(($hn, $hv)),*], $body)
     }};
     (
-        $client:expr$(, $span:expr)?;
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*;
         form/multipart: $body:expr
     ) => {{
-        let (span, target, url) = $crate::span!($client$(, $span)?; $method, $path, $($arg),*);
+        let (span, target, url) = $crate::span!($client; $method, $path, $($arg),*);
         $crate::req_form_multipart(&$client, span, target, $crate::Method::$method, &url, &[$(($hn, $hv)),*], $body)
     }};
     (
-        $client:expr$(, $span:expr)?;
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*;
         form/urlencoded: $body:expr
     ) => {{
-        let (span, target, url) = $crate::span!($client$(, $span)?; $method, $path, $($arg),*);
+        let (span, target, url) = $crate::span!($client; $method, $path, $($arg),*);
         $crate::req_form_urlencoded(&$client, span, target, $crate::Method::$method, &url, &[$(($hn, $hv)),*], $body)
     }};
 }
 
 #[macro_export]
 macro_rules! span {
-    (
-        $client:expr;
-        $method:ident, $target:literal, $($arg:expr),*
-    ) => {{
-        $crate::span!($client, &$crate::Context::current(); $method, $target,  $($arg),*)
-    }};
-
-    (
-        $client:expr, $ctx:expr;
-        $method:ident, $target:literal, $($arg:expr),*
-    ) => {{
+    ($client:expr; $method:ident, $target:literal, $($arg:expr),*) => {{
         use $crate::{Tracer, Span};
         let url = format!("{}{}", $client.uri, format!($target, $($arg),*));
 
         let name = concat!(stringify!($method), " ", $target);
-        let mut span = $client.tracer.start_with_context(name, $ctx);
+        let mut span = $client.tracer.start_with_context(name, &crate::Context::current());
 
         span.set_attributes([
             $crate::KeyValue::new("peer.service", $client.name),
@@ -369,34 +359,22 @@ mod test {
         use super::{Form, client, req};
 
         let client = client("test", hyper::Uri::from_static("/uri"));
-        let ctx = opentelemetry::Context::current();
 
         // no body
         drop(req!(client; GET, "/oi/{}", "blz"; "auth" => "yo"));
-        drop(req!(client, &ctx; GET, "/oi/{}", "blz"; "auth" => "yo"));
 
         // bare body
         drop(
             req!(client; GET, "/oi/{}", "blz"; "auth" => "yo"; Some("body".as_bytes().to_owned())),
         );
-        drop(
-            req!(client, &ctx; GET, "/oi/{}", "blz"; "auth" => "yo"; Some("body".as_bytes().to_owned())),
-        );
 
         // json
         drop(req!(client; POST, "/oi/{}", "blz"; "auth" => "yo"; json: "serializable"));
-        drop(req!(client, &ctx; POST, "/oi/{}", "blz"; "auth" => "yo"; json: "serializable"));
 
         // form multipart
         drop(req!(client; PUT, "/oi/{}", "blz"; "auth" => "yo"; form/multipart: Form::default()));
-        drop(
-            req!(client, &ctx; PUT, "/oi/{}", "blz"; "auth" => "yo"; form/multipart: Form::default()),
-        );
 
         // form urlencoded
         drop(req!(client; PATCH, "/oi/{}", "blz"; "auth" => "yo"; form/urlencoded: ("oi", "blz")));
-        drop(
-            req!(client, &ctx; PATCH, "/oi/{}", "blz"; "auth" => "yo"; form/urlencoded: ("oi", "blz")),
-        );
     }
 }
