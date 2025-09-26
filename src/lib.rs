@@ -335,10 +335,9 @@ macro_rules! req {
 macro_rules! span {
     ($client:expr; $method:ident, $target:literal, $($arg:expr),*) => {{
         use $crate::{Tracer, Span};
-        let url = format!("{}{}", $client.uri, format!($target, $($arg),*));
 
-        let name = concat!(stringify!($method), " ", $target);
-        let mut span = $client.tracer.start_with_context(name, &crate::Context::current());
+        let url = format!("{}{}", $client.uri, format!($target, $($arg),*));
+        let mut span = $client.tracer.start(concat!(stringify!($method), " ", $target));
 
         span.set_attributes([
             $crate::KeyValue::new("peer.service", $client.name),
