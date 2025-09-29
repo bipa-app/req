@@ -355,7 +355,7 @@ mod test {
 
     #[test]
     fn macro_signatures() {
-        use super::{Form, client, req};
+        use super::{Form, client};
 
         let client = client("test", hyper::Uri::from_static("/uri"));
 
