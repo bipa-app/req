@@ -20,7 +20,10 @@ use opentelemetry_semantic_conventions::{
     resource::SERVICE_NAME,
     trace::{HTTP_REQUEST_METHOD, HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE},
 };
-use rustls::ClientConfig;
+use rustls::{
+    ClientConfig,
+    pki_types::{CertificateDer, PrivateKeyDer},
+};
 use serde::Serialize;
 use std::future::Future;
 
@@ -71,6 +74,43 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
         duration,
         tracer,
     }
+}
+
+pub fn client_mtls(
+    name: &'static str,
+    uri: Uri,
+    key: PrivateKeyDer<'static>,
+    certs: Vec<CertificateDer<'static>>,
+) -> Result<Client, rustls::Error> {
+    let config = ClientConfig::builder()
+        .with_webpki_roots()
+        .with_client_auth_cert(certs, key)?;
+
+    let tls = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(config)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .build();
+
+    let hyper = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(tls);
+
+    let duration = opentelemetry::global::meter(name)
+        .u64_histogram("http.client.request.duration")
+        .with_description("How much time does it take to make the request?")
+        .with_unit("ms")
+        .build();
+
+    let tracer = std::sync::Arc::new(opentelemetry::global::tracer(name));
+
+    Ok(Client {
+        uri,
+        name,
+        hyper,
+        duration,
+        tracer,
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
