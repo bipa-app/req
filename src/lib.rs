@@ -18,7 +18,7 @@ use opentelemetry::{
 };
 use opentelemetry_semantic_conventions::{
     resource::SERVICE_NAME,
-    trace::{HTTP_REQUEST_METHOD, HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE},
+    trace::{HTTP_REQUEST_HEADER, HTTP_REQUEST_METHOD, HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE},
 };
 use rustls::ClientConfig;
 use serde::Serialize;
@@ -127,6 +127,12 @@ fn res_process(
                     HTTP_RESPONSE_STATUS_CODE,
                     status.as_u16().to_string(),
                 ));
+                response.headers().iter().for_each(|(name, value)| {
+                    span.set_attribute(KeyValue::new(
+                        format!("{HTTP_REQUEST_HEADER}.{name}"),
+                        value.to_str().unwrap_or_default().to_string(),
+                    ));
+                });
                 span.set_status(opentelemetry::trace::Status::Ok);
 
                 let attrs = [
