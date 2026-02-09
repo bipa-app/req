@@ -21,6 +21,7 @@ serde = { version = "1.0.0", default-features = false }
 serde_json = { version = "1.0.0", features = ["std"], default-features = false }
 serde_urlencoded = { version = "0.7.0", default-features = false }
 thiserror = { version = "2.0.2", default-features = false }
+tokio = { version = "1.49.0", features = ["time"] }
 
 [lints.clippy]
 all = "warn"
