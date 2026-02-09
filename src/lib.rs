@@ -75,16 +75,18 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("prepare")]
-    Prepare(#[from] hyper::http::Error),
-    #[error("encode json")]
-    EncodeJson(#[from] serde_json::Error),
-    #[error("encode form")]
-    EncodeForm(#[from] serde_urlencoded::ser::Error),
-    #[error("encode network")]
-    Network(#[from] hyper_util::client::legacy::Error),
-    #[error("read")]
-    Read(#[from] hyper::Error),
+    #[error("prepare: {0:?}")]
+    Prepare(hyper::http::Error),
+    #[error("encode json: {0:?}")]
+    EncodeJson(serde_json::Error),
+    #[error("encode form: {0:?}")]
+    EncodeForm(serde_urlencoded::ser::Error),
+    #[error("encode network: {0:?}")]
+    Network(hyper_util::client::legacy::Error),
+    #[error("read: {0:?}")]
+    Read(hyper::Error),
+    #[error("timeout")]
+    Timeout,
 }
 
 fn res_process(
@@ -94,6 +96,8 @@ fn res_process(
     method: Method,
     request: Result<ResponseFuture, Error>,
 ) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<> {
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     let service_name = c.name;
     let duration = c.duration.clone();
     let instant = std::time::Instant::now();
@@ -102,7 +106,10 @@ fn res_process(
         let ctx = opentelemetry::Context::current();
         let span = ctx.span();
 
-        let response_result = request?.await;
+        let response_result = match tokio::time::timeout(TIMEOUT, request?).await {
+            Ok(res) => res.map_err(Error::Network),
+            Err(_) => Err(Error::Timeout),
+        };
 
         match response_result {
             Err(e) => {
@@ -119,7 +126,7 @@ fn res_process(
                     &attrs,
                 );
 
-                Err(Error::Network(e))
+                Err(e)
             }
             Ok(response) => {
                 let status = response.status();
