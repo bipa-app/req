@@ -40,12 +40,7 @@ pub struct Client {
 #[error("Body could not be bodied")]
 pub struct BodyError;
 
-#[must_use]
-pub fn client(name: &'static str, uri: Uri) -> Client {
-    let config = ClientConfig::builder()
-        .with_webpki_roots()
-        .with_no_client_auth();
-
+fn build_client(name: &'static str, uri: Uri, config: ClientConfig) -> Client {
     let tls = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config(config)
         .https_or_http()
@@ -73,6 +68,42 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
     }
 }
 
+#[must_use]
+pub fn client(name: &'static str, uri: Uri) -> Client {
+    let config = ClientConfig::builder()
+        .with_webpki_roots()
+        .with_no_client_auth();
+
+    build_client(name, uri, config)
+}
+
+pub fn client_mtls(
+    name: &'static str,
+    uri: Uri,
+    cert_pem: &[u8],
+    key_pem: &[u8],
+) -> Result<Client, Error> {
+    let certs: Vec<_> = rustls_pemfile::certs(&mut &*cert_pem)
+        .collect::<Result<_, _>>()
+        .map_err(|e| Error::PemIo(e, "failed to parse certificate chain"))?;
+
+    if certs.is_empty() {
+        return Err(Error::Pem("no certificates found"));
+    }
+
+    let key = rustls_pemfile::pkcs8_private_keys(&mut &*key_pem)
+        .next()
+        .ok_or(Error::Pem("no PKCS#8 private key found"))?
+        .map_err(|e| Error::PemIo(e, "failed to parse private key"))?;
+
+    let config = ClientConfig::builder()
+        .with_webpki_roots()
+        .with_client_auth_cert(certs, key.into())
+        .map_err(Error::Tls)?;
+
+    Ok(build_client(name, uri, config))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("prepare: {0:?}")]
@@ -87,6 +118,12 @@ pub enum Error {
     Read(hyper::Error),
     #[error("timeout")]
     Timeout,
+    #[error("pem: {0}")]
+    Pem(&'static str),
+    #[error("pem: {1}: {0:?}")]
+    PemIo(std::io::Error, &'static str),
+    #[error("tls: {0:?}")]
+    Tls(rustls::Error),
 }
 
 fn res_process(

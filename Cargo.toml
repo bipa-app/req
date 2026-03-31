@@ -17,6 +17,7 @@ mime = { version = "0.3.0", default-features = false }
 opentelemetry = { version = "0.31.0", features = ["metrics", "trace"], default-features = false }
 opentelemetry-semantic-conventions = { version = "0.31.0", default-features = false }
 rustls = { version = "0.23.0", features = ["std", "aws_lc_rs", "tls12", "prefer-post-quantum"], default-features = false }
+rustls-pemfile = { version = "2.2.0", features = ["std"], default-features = false }
 serde = { version = "1.0.0", default-features = false }
 serde_json = { version = "1.0.0", features = ["std"], default-features = false }
 serde_urlencoded = { version = "0.7.0", default-features = false }
