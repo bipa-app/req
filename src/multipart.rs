@@ -1,4 +1,4 @@
-use futures::{Stream, ready};
+use futures::{ready, Stream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
