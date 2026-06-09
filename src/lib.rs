@@ -125,69 +125,73 @@ fn res_process(
         let ctx = opentelemetry::Context::current();
         let span = ctx.span();
 
-        // Bound each phase independently — awaiting the response headers, and
-        // each gap between body chunks — so a stalled peer can't hold the
-        // request open forever, without capping the total time of a
-        // legitimately large download.
-        let result = async move {
-            let response = match tokio::time::timeout(timeout, request?).await {
-                Ok(response) => response.map_err(Error::Network)?,
-                Err(_elapsed) => return Err(Error::Timeout),
-            };
+        // `status` is captured the moment the headers arrive, so telemetry can
+        // attribute even a failed or timed-out body read to its response code.
+        let mut status = None;
+        let result = drain(&mut status, timeout, request).await;
 
-            let status = response.status();
-            let mut body = response.into_body();
-            let mut buf = bytes::BytesMut::new();
-            loop {
-                match tokio::time::timeout(timeout, body.frame()).await {
-                    Ok(Some(frame)) => {
-                        if let Ok(data) = frame.map_err(Error::Read)?.into_data() {
-                            buf.extend_from_slice(&data);
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_elapsed) => return Err(Error::Timeout),
-                }
-            }
-
-            Ok((status, buf.freeze()))
-        }
-        .await;
-
-        let elapsed = u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX);
         match &result {
-            Ok((status, _)) => {
-                let code = status.as_u16().to_string();
-                span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code.clone()));
-                span.set_status(opentelemetry::trace::Status::Ok);
-                duration.record(
-                    elapsed,
-                    &[
-                        KeyValue::new(SERVICE_NAME, service_name),
-                        KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code),
-                        KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                        KeyValue::new(HTTP_ROUTE, target),
-                    ],
-                );
-            }
-            Err(e) => {
-                span.set_status(opentelemetry::trace::Status::Error {
-                    description: e.to_string().into(),
-                });
-                duration.record(
-                    elapsed,
-                    &[
-                        KeyValue::new(SERVICE_NAME, service_name),
-                        KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                        KeyValue::new(HTTP_ROUTE, target),
-                    ],
-                );
-            }
+            Ok(_) => span.set_status(opentelemetry::trace::Status::Ok),
+            Err(e) => span.set_status(opentelemetry::trace::Status::Error {
+                description: e.to_string().into(),
+            }),
         }
+
+        let code = status.map(|status| status.as_u16().to_string());
+        if let Some(code) = &code {
+            span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code.clone()));
+        }
+
+        let mut attributes = vec![
+            KeyValue::new(SERVICE_NAME, service_name),
+            KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+            KeyValue::new(HTTP_ROUTE, target),
+        ];
+        if let Some(code) = code {
+            attributes.push(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code));
+        }
+        duration.record(
+            u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
+            &attributes,
+        );
 
         result
     }
     .with_context(opentelemetry::Context::current_with_span(span))
+}
+
+// Resolves the response and drains the body, bounding each phase by `timeout`:
+// the wait for the headers, and every gap between body chunks. Reports the
+// response status through `status` as soon as the headers arrive, so a slow or
+// stalled body is still attributable to its status code.
+async fn drain(
+    status: &mut Option<StatusCode>,
+    timeout: std::time::Duration,
+    request: Result<ResponseFuture, Error>,
+) -> Result<(StatusCode, Bytes), Error> {
+    let response = match tokio::time::timeout(timeout, request?).await {
+        Ok(response) => response.map_err(Error::Network)?,
+        Err(_elapsed) => return Err(Error::Timeout),
+    };
+
+    let code = response.status();
+    *status = Some(code);
+
+    let mut body = response.into_body();
+    let mut buf = bytes::BytesMut::new();
+    loop {
+        match tokio::time::timeout(timeout, body.frame()).await {
+            Ok(Some(frame)) => {
+                if let Ok(data) = frame.map_err(Error::Read)?.into_data() {
+                    buf.extend_from_slice(&data);
+                }
+            }
+            Ok(None) => break,
+            Err(_elapsed) => return Err(Error::Timeout),
+        }
+    }
+
+    Ok((code, buf.freeze()))
 }
 
 pub fn req(
@@ -388,10 +392,13 @@ macro_rules! span {
 
 #[cfg(test)]
 mod test {
+    use super::{DEFAULT_TIMEOUT, Error, client};
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt as _;
 
     #[test]
     fn macro_signatures() {
-        use super::{Form, client};
+        use super::Form;
 
         let client = client("test", hyper::Uri::from_static("/uri"));
 
@@ -415,12 +422,60 @@ mod test {
 
     #[test]
     fn with_timeout_overrides_default() {
-        use super::{DEFAULT_TIMEOUT, client};
-
         let client = client("test", hyper::Uri::from_static("/uri"));
         assert_eq!(client.timeout, DEFAULT_TIMEOUT);
 
-        let client = client.with_timeout(std::time::Duration::from_secs(120));
-        assert_eq!(client.timeout, std::time::Duration::from_secs(120));
+        let client = client.with_timeout(Duration::from_secs(120));
+        assert_eq!(client.timeout, Duration::from_secs(120));
+    }
+
+    // Serves `handler` on the first connection and returns the base URI.
+    async fn spawn_server<Fut>(
+        handler: impl FnOnce(tokio::net::TcpStream) -> Fut + Send + 'static,
+    ) -> hyper::Uri
+    where
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.expect("accept");
+            handler(sock).await;
+        });
+        format!("http://{addr}").parse().expect("uri")
+    }
+
+    #[tokio::test]
+    async fn times_out_when_headers_never_arrive() {
+        let uri = spawn_server(|sock| async move {
+            // Accept the connection but never send a response.
+            std::future::pending::<()>().await;
+            drop(sock);
+        })
+        .await;
+
+        let client = client("test", uri).with_timeout(Duration::from_millis(100));
+        let result = req!(client; GET, "/",;).await;
+        assert!(matches!(&result, Err(Error::Timeout)), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn times_out_when_body_stalls_between_chunks() {
+        let uri = spawn_server(|mut sock| async move {
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+                .await
+                .expect("write headers");
+            sock.write_all(&[0u8; 16]).await.expect("write chunk");
+            sock.flush().await.expect("flush");
+            // Stall mid-body without closing the connection.
+            std::future::pending::<()>().await;
+        })
+        .await;
+
+        let client = client("test", uri).with_timeout(Duration::from_millis(100));
+        let result = req!(client; GET, "/",;).await;
+        assert!(matches!(&result, Err(Error::Timeout)), "got {result:?}");
     }
 }
