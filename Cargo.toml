@@ -23,6 +23,9 @@ serde_urlencoded = { version = "0.7.0", default-features = false }
 thiserror = { version = "2.0.2", default-features = false }
 tokio = { version = "1.49.0", features = ["time"], default-features = false }
 
+[dev-dependencies]
+tokio = { version = "1.49.0", features = ["io-util", "macros", "net", "rt", "time"], default-features = false }
+
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
