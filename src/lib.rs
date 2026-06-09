@@ -24,16 +24,35 @@ use rustls::ClientConfig;
 use serde::Serialize;
 use std::future::Future;
 
+/// Default per-phase timeout: the most time spent awaiting the response
+/// headers, and the longest gap allowed between two response-body chunks.
+/// Bounds a stalled peer without capping the total time of a legitimately
+/// large download. Override per client with [`Client::with_timeout`].
+const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Clone)]
 pub struct Client {
     pub uri: Uri,
     pub name: &'static str,
+    timeout: std::time::Duration,
     hyper: hyper_util::client::legacy::Client<
         hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
         http_body_util::combinators::BoxBody<Bytes, BodyError>,
     >,
     duration: opentelemetry::metrics::Histogram<u64>,
     pub tracer: std::sync::Arc<opentelemetry::global::BoxedTracer>,
+}
+
+impl Client {
+    /// Sets the per-phase timeout: the longest the request may wait for the
+    /// response headers, and the longest gap allowed between response-body
+    /// chunks. Bounds a stalled peer without capping total download time.
+    /// Defaults to 10 seconds.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,6 +86,7 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
     Client {
         uri,
         name,
+        timeout: DEFAULT_TIMEOUT,
         hyper,
         duration,
         tracer,
@@ -96,67 +116,76 @@ fn res_process(
     method: Method,
     request: Result<ResponseFuture, Error>,
 ) -> impl Future<Output = Result<(StatusCode, Bytes), Error>> + use<> {
-    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
     let service_name = c.name;
     let duration = c.duration.clone();
+    let timeout = c.timeout;
     let instant = std::time::Instant::now();
 
     async move {
         let ctx = opentelemetry::Context::current();
         let span = ctx.span();
 
-        let response_result = match tokio::time::timeout(TIMEOUT, request?).await {
-            Ok(res) => res.map_err(Error::Network),
-            Err(_) => Err(Error::Timeout),
-        };
+        // Bound each phase independently — awaiting the response headers, and
+        // each gap between body chunks — so a stalled peer can't hold the
+        // request open forever, without capping the total time of a
+        // legitimately large download.
+        let result = async move {
+            let response = match tokio::time::timeout(timeout, request?).await {
+                Ok(response) => response.map_err(Error::Network)?,
+                Err(_elapsed) => return Err(Error::Timeout),
+            };
 
-        match response_result {
-            Err(e) => {
-                let description = e.to_string().into();
-                span.set_status(opentelemetry::trace::Status::Error { description });
-
-                let attrs = [
-                    KeyValue::new(SERVICE_NAME, service_name),
-                    KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                    KeyValue::new(HTTP_ROUTE, target),
-                ];
-                duration.record(
-                    u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    &attrs,
-                );
-
-                Err(e)
+            let status = response.status();
+            let mut body = response.into_body();
+            let mut buf = bytes::BytesMut::new();
+            loop {
+                match tokio::time::timeout(timeout, body.frame()).await {
+                    Ok(Some(frame)) => {
+                        if let Ok(data) = frame.map_err(Error::Read)?.into_data() {
+                            buf.extend_from_slice(&data);
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_elapsed) => return Err(Error::Timeout),
+                }
             }
-            Ok(response) => {
-                let status = response.status();
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    HTTP_RESPONSE_STATUS_CODE,
-                    status.as_u16().to_string(),
-                ));
+
+            Ok((status, buf.freeze()))
+        }
+        .await;
+
+        let elapsed = u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX);
+        match &result {
+            Ok((status, _)) => {
+                let code = status.as_u16().to_string();
+                span.set_attribute(KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code.clone()));
                 span.set_status(opentelemetry::trace::Status::Ok);
-
-                let attrs = [
-                    KeyValue::new(SERVICE_NAME, service_name),
-                    KeyValue::new(HTTP_RESPONSE_STATUS_CODE, status.as_u16().to_string()),
-                    KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
-                    KeyValue::new(HTTP_ROUTE, target),
-                ];
                 duration.record(
-                    u64::try_from(instant.elapsed().as_millis()).unwrap_or(u64::MAX),
-                    &attrs,
+                    elapsed,
+                    &[
+                        KeyValue::new(SERVICE_NAME, service_name),
+                        KeyValue::new(HTTP_RESPONSE_STATUS_CODE, code),
+                        KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+                        KeyValue::new(HTTP_ROUTE, target),
+                    ],
                 );
-
-                let bytes = response
-                    .into_body()
-                    .collect()
-                    .await
-                    .map_err(Error::Read)?
-                    .to_bytes();
-
-                Ok((status, bytes))
+            }
+            Err(e) => {
+                span.set_status(opentelemetry::trace::Status::Error {
+                    description: e.to_string().into(),
+                });
+                duration.record(
+                    elapsed,
+                    &[
+                        KeyValue::new(SERVICE_NAME, service_name),
+                        KeyValue::new(HTTP_REQUEST_METHOD, method.as_str().to_string()),
+                        KeyValue::new(HTTP_ROUTE, target),
+                    ],
+                );
             }
         }
+
+        result
     }
     .with_context(opentelemetry::Context::current_with_span(span))
 }
@@ -382,5 +411,16 @@ mod test {
 
         // form urlencoded
         drop(req!(client; PATCH, "/oi/{}", "blz"; "auth" => "yo"; form/urlencoded: ("oi", "blz")));
+    }
+
+    #[test]
+    fn with_timeout_overrides_default() {
+        use super::{DEFAULT_TIMEOUT, client};
+
+        let client = client("test", hyper::Uri::from_static("/uri"));
+        assert_eq!(client.timeout, DEFAULT_TIMEOUT);
+
+        let client = client.with_timeout(std::time::Duration::from_secs(120));
+        assert_eq!(client.timeout, std::time::Duration::from_secs(120));
     }
 }
