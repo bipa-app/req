@@ -41,6 +41,8 @@ pub struct Client {
     >,
     duration: opentelemetry::metrics::Histogram<u64>,
     pub tracer: std::sync::Arc<opentelemetry::global::BoxedTracer>,
+    #[doc(hidden)]
+    pub redact_url: bool,
 }
 
 impl Client {
@@ -90,6 +92,7 @@ pub fn client(name: &'static str, uri: Uri) -> Client {
         hyper,
         duration,
         tracer,
+        redact_url: false,
     }
 }
 
@@ -327,6 +330,15 @@ pub fn req_form_multipart(
 macro_rules! req {
     (
         $client:expr;
+        $method:ident, $path:literal, redacted $(, $arg:expr)*;
+        $($rest:tt)*
+    ) => {{
+        let mut client = $client.clone();
+        client.redact_url = true;
+        $crate::req!(client; $method, $path, $($arg),*; $($rest)*)
+    }};
+    (
+        $client:expr;
         $method:ident, $path:literal, $($arg:expr),*;
         $($hn:expr=>$hv:expr),*
     ) => {{
@@ -381,7 +393,11 @@ macro_rules! span {
 
         span.set_attributes([
             $crate::KeyValue::new("peer.service", $client.name),
-            $crate::KeyValue::new("url.full", url.clone()),
+            $crate::KeyValue::new("url.full", if $client.redact_url {
+                format!("{}{}", $client.uri, $target)
+            } else {
+                url.clone()
+            }),
             $crate::KeyValue::new("http.route", $target),
             $crate::KeyValue::new("http.request.method", stringify!($method)),
         ]);
@@ -394,7 +410,7 @@ macro_rules! span {
 mod test {
     use super::{DEFAULT_TIMEOUT, Error, client};
     use std::time::Duration;
-    use tokio::io::AsyncWriteExt as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     #[test]
     fn macro_signatures() {
@@ -418,6 +434,34 @@ mod test {
 
         // form urlencoded
         drop(req!(client; PATCH, "/oi/{}", "blz"; "auth" => "yo"; form/urlencoded: ("oi", "blz")));
+    }
+
+    #[test]
+    fn redacted_request_records_the_route_template() {
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let mut client = client("test", hyper::Uri::from_static("/uri"));
+        client.tracer = std::sync::Arc::new(opentelemetry::global::BoxedTracer::new(Box::new(
+            provider.tracer("test"),
+        )));
+
+        drop(req!(client; GET, "/oi/{}", "blz";));
+        drop(req!(client; GET, "/oi/{}", redacted, "blz"; "auth" => "yo"));
+
+        let urls = exporter
+            .get_finished_spans()
+            .expect("finished spans")
+            .iter()
+            .flat_map(|span| &span.attributes)
+            .filter(|kv| kv.key.as_str() == "url.full")
+            .map(|kv| kv.value.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(urls, ["/uri/oi/blz", "/uri/oi/{}"]);
     }
 
     #[test]
@@ -464,6 +508,7 @@ mod test {
     #[tokio::test]
     async fn times_out_when_body_stalls_between_chunks() {
         let uri = spawn_server(|mut sock| async move {
+            sock.read_exact(&mut [0u8; 1]).await.expect("read request");
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
                 .await
                 .expect("write headers");
